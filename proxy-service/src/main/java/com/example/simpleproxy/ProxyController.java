@@ -4,30 +4,41 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.RequestEntity;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Enumeration;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/**")
 @RequiredArgsConstructor
 public class ProxyController {
 
-    private final RestTemplate restTemplate;
+    // Headers that belong to one connection only; they must not be forwarded
+    private static final Set<String> SKIPPED_HEADERS = Set.of(
+            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+            "te", "trailer", "transfer-encoding", "upgrade", "host",
+            "content-length", "expect");
+
+    private final RestClient restClient;
     private final MonitoringRecordRepository recordRepository;
 
     @RequestMapping
-    public ResponseEntity<String> proxyRequest(HttpServletRequest request) {
+    public ResponseEntity<byte[]> proxyRequest(HttpServletRequest request,
+            @RequestBody(required = false) byte[] body) {
         String requestUri = request.getRequestURI();
-        String targetService = null;
-        String backendUrl = null;
+        String targetService;
+        String backendUrl;
 
         // Simple routing based on URI path
         if (requestUri.startsWith("/backend1")) {
@@ -37,55 +48,82 @@ public class ProxyController {
             targetService = "backend-service-2";
             backendUrl = "http://backend-service-2:8080";
         } else {
-            // Log and return 404 for un-routable requests
             logRecord(request, "unknown", 404);
             return ResponseEntity.notFound().build();
         }
 
         try {
-            // Safely calculate path suffix to avoid Range error
+            // Everything after "/backendN" becomes the path on the backend
             String pathSuffix = "";
             int slashIndex = requestUri.indexOf("/", 1);
             if (slashIndex != -1) {
                 pathSuffix = requestUri.substring(slashIndex);
             }
 
-            // Build the target URI
             URI targetUri = UriComponentsBuilder.fromUriString(backendUrl)
                     .path(pathSuffix)
                     .query(request.getQueryString())
                     .build(true).toUri();
 
-            // Copy all headers from the original request
-            HttpHeaders headers = new HttpHeaders();
-            Enumeration<String> headerNames = request.getHeaderNames();
-            while (headerNames.hasMoreElements()) {
-                String headerName = headerNames.nextElement();
-                headers.set(headerName, request.getHeader(headerName));
+            HttpHeaders requestHeaders = copyRequestHeaders(request);
+
+            RestClient.RequestBodySpec spec = restClient
+                    .method(HttpMethod.valueOf(request.getMethod()))
+                    .uri(targetUri)
+                    .headers(h -> h.addAll(requestHeaders));
+
+            if (body != null && body.length > 0) {
+                spec.body(body);
             }
 
-            // Create the request entity to be sent to the backend
-            RequestEntity<String> requestEntity = new RequestEntity<>(
-                    (String) request.getAttribute("body"),
-                    headers,
-                    HttpMethod.valueOf(request.getMethod()),
-                    targetUri);
+            // exchange() does NOT throw on 4xx/5xx, so the real status is passed through
+            ResponseEntity<byte[]> response = spec
+                    .exchange((clientRequest, clientResponse) -> ResponseEntity.status(clientResponse.getStatusCode())
+                            .headers(filterHeaders(clientResponse.getHeaders()))
+                            .body(clientResponse.bodyTo(byte[].class)));
 
-            // Forward the request and get the response
-            ResponseEntity<String> responseEntity = restTemplate.exchange(targetUri,
-                    HttpMethod.valueOf(request.getMethod()), requestEntity, String.class);
+            logRecord(request, targetService, response.getStatusCode().value());
+            return response;
 
-            // Log the request and response status
-            logRecord(request, targetService, responseEntity.getStatusCode().value());
-
-            // Return the response from the backend
-            return responseEntity;
-
+        } catch (ResourceAccessException e) {
+            // Backend is down or unreachable
+            logRecord(request, targetService, 502);
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(("Bad gateway: " + targetService + " is unreachable")
+                            .getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
-            // Log errors and return a 500 status code
             logRecord(request, targetService, 500);
-            return ResponseEntity.status(500).body("Error processing request: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(("Error processing request: " + e.getMessage())
+                            .getBytes(StandardCharsets.UTF_8));
         }
+    }
+
+    private HttpHeaders copyRequestHeaders(HttpServletRequest request) {
+        HttpHeaders headers = new HttpHeaders();
+        Enumeration<String> names = request.getHeaderNames();
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            if (SKIPPED_HEADERS.contains(name.toLowerCase())) {
+                continue;
+            }
+            Enumeration<String> values = request.getHeaders(name);
+            while (values.hasMoreElements()) {
+                headers.add(name, values.nextElement());
+            }
+        }
+        headers.add("X-Forwarded-For", request.getRemoteAddr());
+        return headers;
+    }
+
+    private HttpHeaders filterHeaders(HttpHeaders source) {
+        HttpHeaders headers = new HttpHeaders();
+        source.forEach((name, values) -> {
+            if (!SKIPPED_HEADERS.contains(name.toLowerCase())) {
+                values.forEach(value -> headers.add(name, value));
+            }
+        });
+        return headers;
     }
 
     private void logRecord(HttpServletRequest request, String targetService, int httpStatus) {
@@ -99,4 +137,3 @@ public class ProxyController {
         recordRepository.save(record);
     }
 }
-

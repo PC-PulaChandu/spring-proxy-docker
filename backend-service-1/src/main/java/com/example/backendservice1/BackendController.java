@@ -5,7 +5,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class BackendController {
-    @GetMapping("/")
+
+    @GetMapping({ "/", "/hello" })
     public String hello() {
         return "Hello from Backend Service 1!";
     }

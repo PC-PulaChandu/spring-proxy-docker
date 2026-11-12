@@ -1,5 +1,6 @@
-   *.swp
-   *.log
-   .idea/
-   .vscode/
-   target/
+*.swp
+*.log
+.idea/
+.vscode/
+target/
+.env

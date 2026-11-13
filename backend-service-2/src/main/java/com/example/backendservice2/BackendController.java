@@ -13,7 +13,7 @@ public class BackendController {
 
     @GetMapping({ "/", "/hello" })
     public String hello() {
-        return "Hello from Backend Service 2!";
+        return "Hello from Backend Service 2 after a change!";
     }
 
     @PostMapping("/echo")

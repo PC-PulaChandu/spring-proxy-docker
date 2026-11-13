@@ -15,6 +15,7 @@ import java.util.List;
 public class ProxyProperties {
 
     private List<Route> routes = new ArrayList<>();
+    private int maxAttempts = 2;
 
     @Getter
     @Setter

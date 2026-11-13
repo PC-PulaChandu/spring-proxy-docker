@@ -32,28 +32,26 @@ public class ProxyController {
             "content-length", "expect");
 
     private final RestClient restClient;
-    private final MonitoringRecordRepository recordRepository;
+    private final RequestLogService requestLogService;
     private final RouteResolver routeResolver;
     private final UpstreamSelector upstreamSelector;
 
     @RequestMapping
     public ResponseEntity<byte[]> proxyRequest(HttpServletRequest request,
             @RequestBody(required = false) byte[] body) {
+        long startNanos = System.nanoTime();
         String requestUri = request.getRequestURI();
 
         Optional<ProxyProperties.Route> match = routeResolver.resolve(requestUri);
         if (match.isEmpty()) {
-            logRecord(request, "unknown", 404);
+            logRecord(request, "unknown", 404, startNanos);
             return ResponseEntity.notFound().build();
         }
         ProxyProperties.Route route = match.get();
         String targetService = route.getName();
 
         try {
-            // Strategy pattern: the selector decides which instance gets this request
             String backendUrl = upstreamSelector.select(route.getUrls());
-
-            // Everything after the route prefix becomes the path on the backend
             String pathSuffix = requestUri.substring(route.getPrefix().length());
 
             URI targetUri = UriComponentsBuilder.fromUriString(backendUrl)
@@ -77,16 +75,16 @@ public class ProxyController {
                             .headers(filterHeaders(clientResponse.getHeaders()))
                             .body(clientResponse.bodyTo(byte[].class)));
 
-            logRecord(request, targetService, response.getStatusCode().value());
+            logRecord(request, targetService, response.getStatusCode().value(), startNanos);
             return response;
 
         } catch (ResourceAccessException e) {
-            logRecord(request, targetService, 502);
+            logRecord(request, targetService, 502, startNanos);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(("Bad gateway: " + targetService + " is unreachable")
                             .getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
-            logRecord(request, targetService, 500);
+            logRecord(request, targetService, 500, startNanos);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(("Error processing request: " + e.getMessage())
                             .getBytes(StandardCharsets.UTF_8));
@@ -120,7 +118,9 @@ public class ProxyController {
         return headers;
     }
 
-    private void logRecord(HttpServletRequest request, String targetService, int httpStatus) {
+    private void logRecord(HttpServletRequest request, String targetService,
+            int httpStatus, long startNanos) {
+        // Read everything from the request HERE, on the request thread.
         MonitoringRecord record = new MonitoringRecord();
         record.setClientIp(request.getRemoteAddr());
         record.setRequestPath(request.getRequestURI());
@@ -128,6 +128,7 @@ public class ProxyController {
         record.setTargetService(targetService);
         record.setHttpStatus(httpStatus);
         record.setTimestamp(LocalDateTime.now());
-        recordRepository.save(record);
+        record.setDurationMs((System.nanoTime() - startNanos) / 1_000_000);
+        requestLogService.log(record);
     }
 }

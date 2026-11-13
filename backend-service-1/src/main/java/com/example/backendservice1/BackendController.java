@@ -6,6 +6,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -27,5 +28,11 @@ public class BackendController {
     public ResponseEntity<String> fail() {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body("Simulated failure from Backend Service 1");
+    }
+
+    @GetMapping("/slow")
+    public String slow(@RequestParam(defaultValue = "8000") long ms) throws InterruptedException {
+        Thread.sleep(ms);
+        return "Slow response after " + ms + " ms";
     }
 }

@@ -2,13 +2,14 @@ services:
   mysql:
     image: mysql:8.4
     container_name: proxy-mysql
+    restart: unless-stopped
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -22,6 +23,7 @@ services:
     build:
       context: ./backend-service-1
     container_name: backend-service-1
+    restart: unless-stopped
     environment:
       INSTANCE_NAME: instance-a
     expose:
@@ -31,6 +33,7 @@ services:
     build:
       context: ./backend-service-1
     container_name: backend-service-1b
+    restart: unless-stopped
     environment:
       INSTANCE_NAME: instance-b
     expose:
@@ -40,6 +43,7 @@ services:
     build:
       context: ./backend-service-2
     container_name: backend-service-2
+    restart: unless-stopped
     expose:
       - "8080"
 
@@ -47,14 +51,13 @@ services:
     build:
       context: ./proxy-service
     container_name: proxy-service
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
       DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE}
       DB_USERNAME: ${MYSQL_USER}
       DB_PASSWORD: ${MYSQL_PASSWORD}
-      # LOGGING_LEVEL_COM_EXAMPLE_SIMPLEPROXY: DEBUG
-      # PROXY_SELECTOR: random
     depends_on:
       mysql:
         condition: service_healthy

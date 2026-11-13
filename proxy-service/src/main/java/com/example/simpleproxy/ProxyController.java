@@ -17,6 +17,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Enumeration;
+import java.util.Optional;
 import java.util.Set;
 
 @RestController
@@ -32,33 +33,28 @@ public class ProxyController {
 
     private final RestClient restClient;
     private final MonitoringRecordRepository recordRepository;
+    private final RouteResolver routeResolver;
+    private final UpstreamSelector upstreamSelector;
 
     @RequestMapping
     public ResponseEntity<byte[]> proxyRequest(HttpServletRequest request,
             @RequestBody(required = false) byte[] body) {
         String requestUri = request.getRequestURI();
-        String targetService;
-        String backendUrl;
 
-        // Simple routing based on URI path
-        if (requestUri.startsWith("/backend1")) {
-            targetService = "backend-service-1";
-            backendUrl = "http://backend-service-1:8080";
-        } else if (requestUri.startsWith("/backend2")) {
-            targetService = "backend-service-2";
-            backendUrl = "http://backend-service-2:8080";
-        } else {
+        Optional<ProxyProperties.Route> match = routeResolver.resolve(requestUri);
+        if (match.isEmpty()) {
             logRecord(request, "unknown", 404);
             return ResponseEntity.notFound().build();
         }
+        ProxyProperties.Route route = match.get();
+        String targetService = route.getName();
 
         try {
-            // Everything after "/backendN" becomes the path on the backend
-            String pathSuffix = "";
-            int slashIndex = requestUri.indexOf("/", 1);
-            if (slashIndex != -1) {
-                pathSuffix = requestUri.substring(slashIndex);
-            }
+            // Strategy pattern: the selector decides which instance gets this request
+            String backendUrl = upstreamSelector.select(route.getUrls());
+
+            // Everything after the route prefix becomes the path on the backend
+            String pathSuffix = requestUri.substring(route.getPrefix().length());
 
             URI targetUri = UriComponentsBuilder.fromUriString(backendUrl)
                     .path(pathSuffix)
@@ -76,7 +72,6 @@ public class ProxyController {
                 spec.body(body);
             }
 
-            // exchange() does NOT throw on 4xx/5xx, so the real status is passed through
             ResponseEntity<byte[]> response = spec
                     .exchange((clientRequest, clientResponse) -> ResponseEntity.status(clientResponse.getStatusCode())
                             .headers(filterHeaders(clientResponse.getHeaders()))
@@ -86,7 +81,6 @@ public class ProxyController {
             return response;
 
         } catch (ResourceAccessException e) {
-            // Backend is down or unreachable
             logRecord(request, targetService, 502);
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(("Bad gateway: " + targetService + " is unreachable")

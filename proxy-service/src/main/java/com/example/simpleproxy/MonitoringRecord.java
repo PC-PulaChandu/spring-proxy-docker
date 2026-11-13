@@ -23,4 +23,5 @@ public class MonitoringRecord {
     private String targetService;
     private int httpStatus;
     private LocalDateTime timestamp;
+    private Long durationMs;
 }

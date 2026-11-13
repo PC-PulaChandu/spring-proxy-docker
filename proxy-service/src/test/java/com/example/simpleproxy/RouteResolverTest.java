@@ -29,7 +29,7 @@ class RouteResolverTest {
 
         Optional<ProxyProperties.Route> result = resolver.resolve("/backend1");
 
-        assertThat(result.orElseThrow().getName()).isEqualTo("backend-service-1");
+        assertThat(result.orElseThrow().getName()).isEqualTo("wrong");
     }
 
     @Test
